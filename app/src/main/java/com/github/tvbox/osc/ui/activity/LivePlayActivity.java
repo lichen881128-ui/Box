@@ -133,6 +133,7 @@ public class LivePlayActivity extends BaseActivity {
     private final LivePlayerManager livePlayerManager = new LivePlayerManager();
     private final ArrayList<Integer> channelGroupPasswordConfirmed = new ArrayList<>();
     private int currentLiveChangeSourceTimes = 0;
+    private int currentDecoderTryCount = 0;
 
     // Bottom Channel View
     private LinearLayout tvBottomLayout;
@@ -880,6 +881,7 @@ public class LivePlayActivity extends BaseActivity {
 
     private boolean replayChannel() {
         if (mVideoView == null) return true;
+        currentDecoderTryCount = 0;
         mVideoView.release();
         currentLiveChannelItem = getLiveChannels(currentChannelGroupIndex).get(currentLiveChannelIndex);
         Hawk.put(HawkConfig.LIVE_CHANNEL, currentLiveChannelItem.getChannelName());
@@ -913,6 +915,7 @@ public class LivePlayActivity extends BaseActivity {
         if (mVideoView == null) return true;
         mVideoView.release();
         if (!changeSource) {
+            currentDecoderTryCount = 0;
             currentChannelGroupIndex = channelGroupIndex;
             currentLiveChannelIndex = liveChannelIndex;
             currentLiveChannelItem = getLiveChannels(currentChannelGroupIndex).get(currentLiveChannelIndex);
@@ -956,6 +959,7 @@ public class LivePlayActivity extends BaseActivity {
 
     public void playPreSource() {
         if (!isCurrentLiveChannelValid()) return;
+        currentDecoderTryCount = 0;
         currentLiveChannelItem.preSource();
         playChannel(currentChannelGroupIndex, currentLiveChannelIndex, true);
     }
@@ -965,6 +969,7 @@ public class LivePlayActivity extends BaseActivity {
             return;
         }
         if (!isCurrentLiveChannelValid()) return;
+        currentDecoderTryCount = 0;
         currentLiveChannelItem.nextSource();
         playChannel(currentChannelGroupIndex, currentLiveChannelIndex, true);
     }
@@ -1094,6 +1099,13 @@ public class LivePlayActivity extends BaseActivity {
                     case VideoView.STATE_BUFFERED:
                     case VideoView.STATE_PLAYING:
                         currentLiveChangeSourceTimes = 0;
+                        if (currentDecoderTryCount > 0) {
+                            int succType = livePlayerManager.getLivePlayerType();
+                            String[] dNames = {"系统", "ijk硬解", "ijk软解", "exo"};
+                            String succName = (succType >= 0 && succType < dNames.length) ? dNames[succType] : "自动";
+                            Toast.makeText(mContext, "已自动匹配最佳解码: " + succName, Toast.LENGTH_SHORT).show();
+                        }
+                        currentDecoderTryCount = 0;
                         mHandler.removeCallbacks(mConnectTimeoutChangeSourceRun);
                         mHandler.removeCallbacks(mConnectTimeoutReplayRun);
                         break;
@@ -1101,6 +1113,9 @@ public class LivePlayActivity extends BaseActivity {
                     case VideoView.STATE_PLAYBACK_COMPLETED:
                         mHandler.removeCallbacks(mConnectTimeoutChangeSourceRun);
                         mHandler.removeCallbacks(mConnectTimeoutReplayRun);
+                        if (tryNextDecoder()) {
+                            break;
+                        }
                         if (Hawk.get(HawkConfig.LIVE_CONNECT_TIMEOUT, 2) == 0) {
                             //缓冲30s重新播放
                             mHandler.postDelayed(mConnectTimeoutReplayRun, 30 * 1000L);
@@ -1138,9 +1153,47 @@ public class LivePlayActivity extends BaseActivity {
         mVideoView.setProgressManager(null);
     }
 
+    private boolean tryNextDecoder() {
+        if (!isCurrentLiveChannelValid() || mVideoView == null) return false;
+        if (currentDecoderTryCount >= 3) {
+            currentDecoderTryCount = 0;
+            return false;
+        }
+        currentDecoderTryCount++;
+        int currentType = livePlayerManager.getLivePlayerType();
+        int nextType;
+        switch (currentType) {
+            case 3: // exo -> ijk硬解
+                nextType = 1;
+                break;
+            case 1: // ijk硬解 -> ijk软解
+                nextType = 2;
+                break;
+            case 2: // ijk软解 -> 系统
+                nextType = 0;
+                break;
+            case 0: // 系统 -> exo
+            default:
+                nextType = 3;
+                break;
+        }
+        String[] decoderNames = {"系统", "ijk硬解", "ijk软解", "exo"};
+        String nextName = (nextType >= 0 && nextType < decoderNames.length) ? decoderNames[nextType] : "自适应";
+        Toast.makeText(mContext, "画面解码自适应中 -> 尝试【" + nextName + "】", Toast.LENGTH_SHORT).show();
+
+        mVideoView.release();
+        livePlayerManager.changeLivePlayerType(mVideoView, nextType, currentLiveChannelItem.getChannelName());
+        mVideoView.setUrl(currentLiveChannelItem.getUrl(), setPlayHeaders(currentLiveChannelItem.getUrl()));
+        mVideoView.start();
+        return true;
+    }
+
     private final Runnable mConnectTimeoutChangeSourceRun = new Runnable() {
         @Override
         public void run() {
+            if (tryNextDecoder()) {
+                return;
+            }
             currentLiveChangeSourceTimes++;
             if (currentLiveChannelItem.getSourceNum() == currentLiveChangeSourceTimes) {
                 currentLiveChangeSourceTimes = 0;
