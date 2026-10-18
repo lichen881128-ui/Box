@@ -37,10 +37,19 @@ jobs:
       - name: Build Release APKs with Gradle
         run: ./gradlew assembleArmeabiGenericNormalRelease assembleArm64GenericNormalRelease --no-daemon --stacktrace
 
-      - name: Prepare APKs
+      - name: Prepare APKs and Sign
         run: |
           mkdir -p release-apks
           find app/build/outputs/apk -type f -name "*.apk" -exec cp {} release-apks/ \;
+          BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -n 1)
+          for f in release-apks/*.apk; do
+            echo "Checking signature for $f"
+            $BUILD_TOOLS_DIR/apksigner verify -v "$f" || {
+              echo "APK is not signed, signing with debug keystore..."
+              $BUILD_TOOLS_DIR/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android "$f"
+              $BUILD_TOOLS_DIR/apksigner verify -v "$f"
+            }
+          done
           ls -lh release-apks/
 
       - name: Upload Artifact
